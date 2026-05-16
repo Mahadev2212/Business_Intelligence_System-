@@ -1,116 +1,199 @@
-from fastapi import APIRouter, HTTPException, Depends
+# backend/routes/query.py
+"""
+Natural Language → SQL endpoint (FR-13 to FR-17)
+  POST /api/v1/query/nl   - accepts English question, returns data + SQL
+  GET  /api/v1/query/history - returns query history for current user
+"""
+import re
+import time
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-from anomaly_detection import detect_anomalies
-from forecasting import generate_forecast
-from churn_prediction import predict_churn
-from routes.auth import verify_token, TokenData
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-router = APIRouter()
+from config import get_settings
+from database import get_db
+from models.orm import User, QueryHistory, SecurityLog
+from services.auth_service import require_manager
 
+router = APIRouter(prefix="/query", tags=["NL Query"])
+settings = get_settings()
 
-class QueryRequest(BaseModel):
-    query: str
-    dataset: Optional[str] = "default"
-    filters: Optional[Dict[str, Any]] = {}
-    limit: Optional[int] = 100
+# Tables the NL engine is allowed to touch (read-only whitelist)
+ALLOWED_TABLES = {
+    "fact_sales", "dim_customers", "dim_products",
+    "dim_regions", "dim_time", "ml_anomalies",
+    "ml_forecasts", "ml_churn_scores",
+}
 
-
-class AnomalyRequest(BaseModel):
-    data: List[float]
-    sensitivity: Optional[float] = 0.05
-    method: Optional[str] = "isolation_forest"
-
-
-class ForecastRequest(BaseModel):
-    data: List[float]
-    periods: Optional[int] = 30
-    frequency: Optional[str] = "D"
+# SQL injection / destructive keyword guard
+BLOCKED_PATTERNS = re.compile(
+    r"\b(DROP|DELETE|INSERT|UPDATE|ALTER|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE|"
+    r"xp_|sp_|UNION\s+ALL|INTO\s+OUTFILE|LOAD_FILE)\b",
+    re.IGNORECASE,
+)
 
 
-class ChurnRequest(BaseModel):
-    customer_data: List[Dict[str, Any]]
-    threshold: Optional[float] = 0.5
+def _validate_sql(sql: str) -> str:
+    """
+    Reject any SQL that is not a plain SELECT or contains dangerous keywords.
+    Raises HTTPException on violation.
+    """
+    clean = sql.strip().rstrip(";")
+    if not clean.upper().startswith("SELECT"):
+        raise HTTPException(status_code=400, detail="Only SELECT queries are permitted")
+    if BLOCKED_PATTERNS.search(clean):
+        raise HTTPException(status_code=400, detail="Query blocked: destructive or injection pattern detected")
+    return clean
 
 
-@router.post("/execute")
-def execute_query(
-    request: QueryRequest,
-    token_data: TokenData = Depends(verify_token)
-):
-    """Execute a natural language or SQL-like query against the data."""
-    try:
-        # Placeholder — integrate with real DB or NLP-to-SQL engine
-        result = {
-            "query": request.query,
-            "dataset": request.dataset,
-            "rows_returned": 0,
-            "data": [],
-            "execution_time_ms": 12
-        }
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def _nl_to_sql(question: str) -> str:
+    """
+    Call OpenAI GPT-4o to translate a natural language question into a SQL
+    SELECT statement constrained to the BI star schema.
 
+    Falls back to a simple heuristic if no API key is configured.
+    """
+    schema_hint = """
+Tables: fact_sales(sale_id, customer_id, product_id, time_id, region_id, quantity, unit_price, discount_pct, amount, status, created_at),
+dim_customers(customer_id, name, segment, region_id, join_date),
+dim_products(product_id, name, category, unit_price),
+dim_time(time_id, date, week, month, quarter, year),
+dim_regions(region_id, city, state, country, zone),
+ml_anomalies(anomaly_id, sale_id, anomaly_score, is_flagged),
+ml_forecasts(forecast_id, forecast_date, predicted_value),
+ml_churn_scores(score_id, customer_id, churn_prob, risk_label)
+"""
+    if not settings.OPENAI_API_KEY:
+        # Simple heuristic fallback for demo when no API key is set
+        q_lower = question.lower()
+        if "revenue" in q_lower:
+            return "SELECT ROUND(SUM(amount)::numeric,2) AS total_revenue FROM fact_sales WHERE status='completed'"
+        if "anomal" in q_lower:
+            return "SELECT * FROM ml_anomalies WHERE is_flagged=TRUE ORDER BY anomaly_score DESC LIMIT 20"
+        if "churn" in q_lower:
+            return "SELECT customer_id, churn_prob, risk_label FROM ml_churn_scores ORDER BY churn_prob DESC LIMIT 20"
+        if "forecast" in q_lower:
+            return "SELECT forecast_date, predicted_value FROM ml_forecasts ORDER BY forecast_date LIMIT 30"
+        return "SELECT * FROM fact_sales ORDER BY created_at DESC LIMIT 10"
 
-@router.post("/anomalies")
-def run_anomaly_detection(
-    request: AnomalyRequest,
-    token_data: TokenData = Depends(verify_token)
-):
-    """Detect anomalies in the provided time-series data."""
-    try:
-        result = detect_anomalies(
-            data=request.data,
-            sensitivity=request.sensitivity,
-            method=request.method
+    import httpx
+    system_prompt = (
+        "You are a SQL generator. Given a natural language question, produce ONLY a valid PostgreSQL "
+        "SELECT statement using these tables:\n" + schema_hint +
+        "\nRules: only SELECT, no subqueries modifying data, LIMIT 200 max, return ONLY the SQL."
+    )
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.OPENAI_API_KEY}"},
+            json={
+                "model": settings.OPENAI_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": question},
+                ],
+                "temperature": 0,
+                "max_tokens": 300,
+            },
         )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    resp.raise_for_status()
+    sql = resp.json()["choices"][0]["message"]["content"].strip()
+    # Strip markdown fences if present
+    sql = re.sub(r"```sql|```", "", sql).strip()
+    return sql
 
 
-@router.post("/forecast")
-def run_forecast(
-    request: ForecastRequest,
-    token_data: TokenData = Depends(verify_token)
+# ---- Pydantic schemas -----------------------------------------------
+
+class NLQueryRequest(BaseModel):
+    question: str
+
+
+# ---- Endpoints ------------------------------------------------------
+
+@router.post("/nl")
+async def nl_query(
+    body: NLQueryRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_manager),
 ):
-    """Generate a time-series forecast for the provided data."""
+    """Translate a natural-language question to SQL and return results."""
+    if not body.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    raw_sql = await _nl_to_sql(body.question)
+    safe_sql = _validate_sql(raw_sql)
+
+    start = time.monotonic()
     try:
-        result = generate_forecast(
-            data=request.data,
-            periods=request.periods,
-            frequency=request.frequency
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        result = db.execute(text(safe_sql))
+        rows = [dict(r._mapping) for r in result.fetchall()]
+        exec_ms = int((time.monotonic() - start) * 1000)
+        success = True
+    except Exception as exc:
+        exec_ms = int((time.monotonic() - start) * 1000)
+        # Log the failure
+        db.add(SecurityLog(
+            user_id=current_user.user_id,
+            username=current_user.username,
+            event_type="NL_QUERY_ERROR",
+            payload={"question": body.question, "sql": safe_sql, "error": str(exc)},
+            status_code=500,
+        ))
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Query execution failed: {exc}")
 
+    # Persist query history (FR-16)
+    db.add(QueryHistory(
+        user_id=current_user.user_id,
+        nl_question=body.question,
+        generated_sql=safe_sql,
+        row_count=len(rows),
+        exec_time_ms=exec_ms,
+        success=success,
+    ))
+    db.add(SecurityLog(
+        user_id=current_user.user_id,
+        username=current_user.username,
+        event_type="NL_QUERY",
+        payload={"question": body.question, "row_count": len(rows)},
+        status_code=200,
+    ))
+    db.commit()
 
-@router.post("/churn")
-def run_churn_prediction(
-    request: ChurnRequest,
-    token_data: TokenData = Depends(verify_token)
-):
-    """Predict customer churn probability."""
-    try:
-        result = predict_churn(
-            customer_data=request.customer_data,
-            threshold=request.threshold
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/datasets")
-def list_datasets(token_data: TokenData = Depends(verify_token)):
-    """List available datasets."""
     return {
-        "datasets": [
-            {"id": "sales", "name": "Sales Data", "rows": 15000},
-            {"id": "customers", "name": "Customer Data", "rows": 8500},
-            {"id": "inventory", "name": "Inventory Data", "rows": 3200},
-            {"id": "financials", "name": "Financial Data", "rows": 24000},
-        ]
+        "question":    body.question,
+        "sql":         safe_sql,   # FR-17: transparency
+        "rows":        rows[:200],
+        "row_count":   len(rows),
+        "exec_time_ms": exec_ms,
     }
+
+
+@router.get("/history")
+async def query_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_manager),
+    limit: int = 20,
+):
+    rows = (
+        db.query(QueryHistory)
+        .filter(QueryHistory.user_id == current_user.user_id)
+        .order_by(QueryHistory.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "query_id":     r.query_id,
+            "nl_question":  r.nl_question,
+            "generated_sql": r.generated_sql,
+            "row_count":    r.row_count,
+            "exec_time_ms": r.exec_time_ms,
+            "created_at":   str(r.created_at),
+        }
+        for r in rows
+    ]

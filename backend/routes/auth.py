@@ -1,117 +1,138 @@
-from fastapi import APIRouter, HTTPException, Depends, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
-from datetime import datetime, timedelta
-from typing import Optional
-import jwt
-import os
+# backend/routes/auth.py
+"""
+Authentication endpoints:
+  POST /api/v1/auth/login     - returns JWT
+  POST /api/v1/auth/logout    - logs event, client discards token
+  POST /api/v1/auth/register  - admin only
+  GET  /api/v1/auth/me        - returns current user profile
+"""
+from datetime import datetime, timezone
 
-router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
 
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+from database import get_db
+from models.orm import User
+from services.auth_service import (
+    hash_password, verify_password, create_access_token,
+    get_current_user, require_admin, log_event,
+)
 
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-
-class TokenData(BaseModel):
-    username: Optional[str] = None
+router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-class User(BaseModel):
+# ---- Pydantic schemas -----------------------------------------------
+
+class LoginRequest(BaseModel):
     username: str
-    email: Optional[str] = None
-    full_name: Optional[str] = None
-    disabled: Optional[bool] = None
-
-
-class UserCreate(BaseModel):
-    username: str
-    email: str
-    full_name: str
     password: str
 
 
-# Fake user database (replace with real DB in production)
-fake_users_db = {
-    "admin": {
-        "username": "admin",
-        "full_name": "Admin User",
-        "email": "admin@example.com",
-        "hashed_password": "fakehashedpassword",
-        "disabled": False,
-        "role": "admin"
-    }
-}
+class RegisterRequest(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    role: str = "viewer"
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    role: str
+    username: str
 
 
-def verify_token(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        return TokenData(username=username)
-    except jwt.PyJWTError:
-        raise credentials_exception
+class UserProfile(BaseModel):
+    user_id: int
+    username: str
+    email: str
+    role: str
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
-@router.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = fake_users_db.get(form_data.username)
-    if not user or form_data.password != "admin123":  # Replace with real password check
+# ---- Endpoints ------------------------------------------------------
+
+@router.post("/login", response_model=TokenResponse)
+async def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    """Validate credentials and issue a JWT with embedded role."""
+    user = db.query(User).filter(User.username == body.username).first()
+
+    if not user or not verify_password(body.password, user.password_hash):
+        # Log failed attempt (FR-06)
+        log_event(
+            db, "LOGIN_FAIL", request,
+            username=body.username,
+            payload={"reason": "invalid credentials"},
+            status_code=401,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user["username"]}, expires_delta=access_token_expires
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is disabled")
+
+    # Update last_login
+    user.last_login = datetime.now(timezone.utc)
+    db.commit()
+
+    token = create_access_token({"sub": user.username, "role": user.role})
+
+    log_event(db, "LOGIN_SUCCESS", request, user_id=user.user_id, username=user.username)
+
+    return TokenResponse(
+        access_token=token,
+        role=user.role,
+        username=user.username,
     )
-    return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.post("/register", status_code=status.HTTP_201_CREATED)
-def register(user: UserCreate):
-    if user.username in fake_users_db:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    fake_users_db[user.username] = {
-        "username": user.username,
-        "full_name": user.full_name,
-        "email": user.email,
-        "hashed_password": f"fakehashed{user.password}",
-        "disabled": False,
-        "role": "viewer"
-    }
-    return {"message": "User registered successfully"}
+@router.post("/logout", status_code=204)
+async def logout(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Log the logout event. Token invalidation is client-side (stateless JWT)."""
+    log_event(db, "LOGOUT", request, user_id=current_user.user_id, username=current_user.username)
+    return None
 
 
-@router.get("/me", response_model=User)
-def read_users_me(token_data: TokenData = Depends(verify_token)):
-    user = fake_users_db.get(token_data.username)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+@router.post("/register", response_model=UserProfile, status_code=201)
+async def register(
+    body: RegisterRequest,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),   # Only admins can create users
+):
+    """Admin-only endpoint to create new users."""
+    if body.role not in ("admin", "manager", "viewer"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    if db.query(User).filter(User.username == body.username).first():
+        raise HTTPException(status_code=409, detail="Username already exists")
+
+    if db.query(User).filter(User.email == body.email).first():
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    user = User(
+        username=body.username,
+        email=body.email,
+        password_hash=hash_password(body.password),
+        role=body.role,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return user
 
 
-@router.post("/logout")
-def logout():
-    return {"message": "Logged out successfully"}
+@router.get("/me", response_model=UserProfile)
+async def get_me(current_user: User = Depends(get_current_user)):
+    """Return the current authenticated user's profile."""
+    return current_user
