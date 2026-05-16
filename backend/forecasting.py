@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 import numpy as np
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
@@ -30,8 +31,8 @@ def generate_forecast(
 
 def _prophet_forecast(data: List[float], periods: int, frequency: str) -> Dict[str, Any]:
     """Prophet-based forecast (requires prophet package)."""
-    from prophet import Prophet
-    import pandas as pd
+    from prophet import Prophet  # pyrefly: ignore [missing-import]
+    import pandas as pd  # pyrefly: ignore [missing-import]
 
     freq_map = {"D": "D", "W": "W", "M": "MS"}
     freq = freq_map.get(frequency, "D")
