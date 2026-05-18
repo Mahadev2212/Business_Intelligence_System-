@@ -1,123 +1,36 @@
-# 📊 Business Intelligence System
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-An AI-powered Business Intelligence platform featuring real-time analytics, anomaly detection, time-series forecasting, and customer churn prediction.
+## Getting Started
 
----
-
-## 🏗 Project Structure
-
-```
-Business_Intelligence_System-/
-├── backend/
-│   ├── main.py                 # FastAPI application entry point
-│   ├── routes/
-│   │   ├── auth.py             # JWT authentication endpoints
-│   │   └── query.py            # Data query & AI analysis endpoints
-│   ├── models/                 # SQLAlchemy ORM models (extend as needed)
-│   ├── anomaly_detection.py    # IsolationForest / Z-score / IQR anomaly detection
-│   ├── forecasting.py          # Prophet / exponential smoothing forecasting
-│   ├── churn_prediction.py     # Gradient Boosting churn prediction
-│   └── requirements.txt        # Python dependencies
-├── frontend/
-│   ├── public/                 # Static assets
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── Dashboard.jsx   # KPI cards, charts, anomaly & churn views
-│   │   │   └── SecurityLogs.jsx# Audit log viewer with filtering & pagination
-│   │   └── App.jsx             # Root component with sidebar navigation
-│   └── package.json            # Node dependencies (React + Vite + Recharts)
-├── database/
-│   ├── init.sql                # Core schema (users, customers, transactions)
-│   └── security.sql            # Security logs, audit trail, sessions
-├── .env.example                # Environment variable template
-├── .gitignore
-└── README.md
-```
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Python 3.10+
-- Node.js 18+
-- PostgreSQL 15+
-
-### Backend Setup
+First, run the development server:
 
 ```bash
-cd backend
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -r requirements.txt
-cp ../.env.example ../.env      # fill in your values
-uvicorn main:app --reload
-```
-
-API available at: `http://localhost:8000`  
-Interactive docs: `http://localhost:8000/docs`
-
-### Frontend Setup
-
-```bash
-cd frontend
-npm install
 npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
 ```
 
-App available at: `http://localhost:5173`
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-### Database Setup
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-```bash
-psql -U postgres -c "CREATE DATABASE bi_system;"
-psql -U postgres -d bi_system -f database/init.sql
-psql -U postgres -d bi_system -f database/security.sql
-```
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
----
+## Learn More
 
-## 🧠 AI Features
+To learn more about Next.js, take a look at the following resources:
 
-| Feature | Module | Algorithms |
-|---|---|---|
-| Anomaly Detection | `anomaly_detection.py` | IsolationForest, Z-score, IQR |
-| Time-Series Forecasting | `forecasting.py` | Prophet, Exponential Smoothing |
-| Churn Prediction | `churn_prediction.py` | Gradient Boosting, Rule-based fallback |
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 
----
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## 🔐 Authentication
+## Deploy on Vercel
 
-- JWT-based authentication via `/api/auth/login`
-- Default credentials: `admin` / `admin123` *(change in production)*
-- Role-based access: `admin`, `analyst`, `viewer`
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
----
-
-## 📡 API Endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/api/auth/login` | Obtain JWT token |
-| POST | `/api/auth/register` | Register new user |
-| GET  | `/api/auth/me` | Get current user |
-| POST | `/api/query/anomalies` | Run anomaly detection |
-| POST | `/api/query/forecast` | Generate forecast |
-| POST | `/api/query/churn` | Predict customer churn |
-| GET  | `/api/query/datasets` | List available datasets |
-
----
-
-## 🛠 Tech Stack
-
-**Backend:** Python · FastAPI · SQLAlchemy · PostgreSQL · scikit-learn · NumPy · Pandas  
-**Frontend:** React 18 · Vite · Recharts · React Router v6  
-**Auth:** JWT (PyJWT) · OAuth2 Password Flow  
-**ML:** scikit-learn · Prophet (optional) · XGBoost (optional)
-
----
-
-## 📄 License
-
-MIT License
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.

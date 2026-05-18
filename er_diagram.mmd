@@ -1,0 +1,107 @@
+erDiagram
+    EMPLOYEES ||--o{ PRODUCTION : manages
+    EMPLOYEES ||--o{ WAREHOUSES : supervises
+    WAREHOUSES ||--o{ INVENTORY : stores
+    PRODUCTS ||--o{ INVENTORY : has_stock
+    PRODUCTS ||--o{ ORDER_ITEMS : included_in
+    PRODUCTS ||--o{ PRODUCTION : produced_via
+    CUSTOMERS ||--o{ ORDERS : places
+    ORDERS ||--|{ ORDER_ITEMS : contains
+    SUPPLIERS ||--o{ RAW_MATERIALS : supplies
+    RAW_MATERIALS ||--o{ MATERIAL_USAGE : consumed_in
+    PRODUCTION ||--o{ MATERIAL_USAGE : records
+
+    EMPLOYEES {
+        NUMBER employee_id PK
+        VARCHAR2 name
+        VARCHAR2 department
+        VARCHAR2 role
+        VARCHAR2 shift
+        DATE hire_date
+        NUMBER salary
+        VARCHAR2 status
+    }
+    PRODUCTS {
+        NUMBER product_id PK
+        VARCHAR2 product_name
+        VARCHAR2 category
+        NUMBER unit_price
+        NUMBER cost_price
+        VARCHAR2 unit
+    }
+    SUPPLIERS {
+        NUMBER supplier_id PK
+        VARCHAR2 supplier_name
+        VARCHAR2 contact_person
+        VARCHAR2 email
+        NUMBER rating
+        NUMBER on_time_delivery
+        VARCHAR2 status
+    }
+    WAREHOUSES {
+        NUMBER warehouse_id PK
+        VARCHAR2 warehouse_name
+        VARCHAR2 location
+        NUMBER capacity
+        VARCHAR2 manager
+    }
+    INVENTORY {
+        NUMBER inventory_id PK
+        NUMBER product_id FK
+        NUMBER warehouse_id FK
+        NUMBER quantity
+        NUMBER reorder_level
+        DATE last_updated
+    }
+    CUSTOMERS {
+        NUMBER customer_id PK
+        VARCHAR2 customer_name
+        VARCHAR2 company
+        VARCHAR2 email
+        VARCHAR2 city
+        VARCHAR2 region
+    }
+    ORDERS {
+        NUMBER order_id PK
+        NUMBER customer_id FK
+        DATE order_date
+        DATE delivery_date
+        VARCHAR2 status
+        NUMBER total_amount
+    }
+    ORDER_ITEMS {
+        NUMBER item_id PK
+        NUMBER order_id FK
+        NUMBER product_id FK
+        NUMBER quantity
+        NUMBER unit_price
+        NUMBER discount
+    }
+    PRODUCTION {
+        NUMBER production_id PK
+        NUMBER product_id FK
+        NUMBER employee_id FK
+        NUMBER planned_qty
+        NUMBER actual_qty
+        DATE production_date
+        VARCHAR2 status
+        VARCHAR2 machine_id
+        VARCHAR2 shift
+    }
+    RAW_MATERIALS {
+        NUMBER material_id PK
+        VARCHAR2 material_name
+        NUMBER supplier_id FK
+        NUMBER unit_cost
+        NUMBER stock_qty
+        NUMBER reorder_level
+        VARCHAR2 unit
+    }
+    MATERIAL_USAGE {
+        NUMBER usage_id PK
+        NUMBER material_id FK
+        NUMBER production_id FK
+        NUMBER quantity_used
+        DATE usage_date
+        NUMBER waste_qty
+    }
